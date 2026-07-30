@@ -37,11 +37,14 @@ VERIFY := python3 util/verify.py
 CONVBIN := $(CEDEV)/bin/convbin
 
 # Extra options forwarded to the encoder, e.g. make data VIDEO=x.mp4 ENCFLAGS="--fps 15"
+# For a quick pipeline check, ENCFLAGS="--max-frames 15" encodes only the first
+# few frames; pass the same flag in VERIFYFLAGS when verifying such a run.
 ENCFLAGS ?=
+VERIFYFLAGS ?=
 
 HEADER_BIN := $(DATADIR)/badapplh.bin
 
-.PHONY: data appvars verify hosttest distclean
+.PHONY: data appvars bundle verify hosttest distclean
 
 data: $(HEADER_BIN)
 	@$(MAKE) --no-print-directory appvars
@@ -68,6 +71,16 @@ appvars: $(HEADER_BIN)
 	    $(CONVBIN) -l 1 -j bin -k 8xv -r -n $$name -i $$f -o $(BINDIR)/$$name.8xv || exit 1; \
 	done
 
+# Pack the program and every appvar into one TI-84 Plus CE bundle, so the whole
+# thing can be sent in a single drag rather than as four dozen separate files.
+BUNDLE := $(BINDIR)/$(NAME).b84
+
+bundle: appvars
+	@echo "bundling $(BUNDLE)"
+	@$(CONVBIN) -l 2 -k b84 -o $(BUNDLE) \
+	    $(foreach f,$(BINDIR)/$(NAME).8xp $(wildcard $(BINDIR)/*.8xv),-j 8x -i $(f))
+	@echo "Send $(BUNDLE) to the calculator with TI Connect CE."
+
 # The calculator payload is zx0-compressed, which only the calculator can expand,
 # so host checks run against the uncompressed copy the encoder writes alongside
 # it. That covers everything but the single zx0_Decompress call.
@@ -77,7 +90,7 @@ CHECKDIR = $(if $(wildcard $(HOSTCHECK)/badapplh.bin),$(HOSTCHECK),$(DATADIR))
 # Round-trip the encoded data through the reference decoder. Pass the source
 # video to also compare every frame against it bit-for-bit.
 verify:
-	$(VERIFY) $(CHECKDIR) $(if $(VIDEO),--source "$(VIDEO)")
+	$(VERIFY) $(CHECKDIR) $(if $(VIDEO),--source "$(VIDEO)") $(VERIFYFLAGS)
 
 # Compile the calculator's decoder (src/video.c) for the host and check it
 # produces exactly the same frames as the independent Python reference decoder.

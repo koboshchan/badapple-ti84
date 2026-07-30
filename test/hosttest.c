@@ -17,7 +17,9 @@
 #include "../src/video.h"
 #include "fileioc.h"
 
-#define MAX_VARS 136
+/* Handles are a single byte, and 0 means "not found", so 255 slots is the ceiling
+ * the real fileioc imposes too. Slots are recycled on close. */
+#define MAX_VARS 256
 
 static char data_dir[512] = ".";
 
@@ -51,9 +53,9 @@ uint8_t ti_Open(const char *name, const char *mode)
     }
 
     uint8_t handle = 0;
-    for (uint8_t i = 1; i < MAX_VARS; i++) {
+    for (unsigned int i = 1; i < MAX_VARS; i++) {
         if (!vars[i].used) {
-            handle = i;
+            handle = (uint8_t)i;
             break;
         }
     }
@@ -79,9 +81,14 @@ uint8_t ti_Open(const char *name, const char *mode)
     return handle;
 }
 
-/* The real ti_Close releases the handle but leaves the variable's data in place;
- * video.c keeps using pointers afterwards, so the buffer must outlive it. */
-void ti_Close(uint8_t handle) { (void)handle; }
+/* The real ti_Close frees the handle while the variable's data stays where it is;
+ * video.c keeps using pointers after closing. So release the slot for reuse --
+ * handles are only a byte wide, and a long video is opened more times than that
+ * -- but deliberately leak the buffer so those pointers stay valid. */
+void ti_Close(uint8_t handle)
+{
+    vars[handle].used = false;
+}
 void *ti_GetDataPtr(uint8_t handle) { return vars[handle].data; }
 uint16_t ti_GetSize(uint8_t handle) { return (uint16_t)vars[handle].size; }
 int ti_IsArchived(uint8_t handle) { (void)handle; return 1; }

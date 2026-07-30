@@ -172,6 +172,8 @@ def main():
                     help="original video, to compare decoded frames against")
     ap.add_argument("--threshold", type=int, default=127)
     ap.add_argument("--stretch", action="store_true")
+    ap.add_argument("--max-frames", type=int, metavar="N",
+                    help="match an encode that used --max-frames N")
     ap.add_argument("--dump", metavar="FILE",
                     help="write every decoded frame as raw 1bpp bytes, for "
                          "comparison against the C decoder (see test/)")
@@ -181,13 +183,10 @@ def main():
     print("Header: %d frames, %d fps, %d chunks, %d byte blocks, flags 0x%02X"
           % (header["frame_count"], header["fps"], header["chunk_count"],
              header["block_size"], header["flags"]))
-    # The appvar size limit only binds files destined for a calculator; the
-    # uncompressed copy written for host checks deliberately uses larger chunks.
-    oversized = [i for i, d in enumerate(chunks) if len(d) > ba.CHUNK_MAX]
-    if oversized:
-        print("note: %d chunk(s) exceed the %d byte appvar limit, so this is a "
-              "host-only copy, not a calculator payload"
-              % (len(oversized), ba.CHUNK_MAX))
+    for i, data in enumerate(chunks):
+        if len(data) > ba.CHUNK_MAX:
+            sys.exit("error: chunk %d is %d bytes, over the %d byte limit"
+                     % (i, len(data), ba.CHUNK_MAX))
     if header["flags"] & ba.FLAG_ZX0:
         sys.exit("error: %s holds zx0-compressed blocks, which can only be "
                  "expanded on the calculator. Verify the uncompressed twin the "
@@ -196,10 +195,18 @@ def main():
 
     reference = None
     if args.source:
-        reference = encode.packed_frames(
-            args.source, header["fps"], args.threshold,
+        # Reproduce the encoder's frames exactly: it decodes once at the highest
+        # candidate framerate and samples lower rates from that, so decoding the
+        # source directly at the playback rate would select slightly different
+        # frames and report spurious mismatches.
+        _, source_fps = encode.probe(args.source)
+        base_fps = encode.candidate_framerates(source_fps)[0]
+        cache = encode.FrameCache(
+            args.source, base_fps, args.threshold,
             bool(header["flags"] & ba.FLAG_INVERT),
-            bool(header["flags"] & ba.FLAG_MSB_FIRST), args.stretch)
+            bool(header["flags"] & ba.FLAG_MSB_FIRST), args.stretch,
+            max_frames=args.max_frames)
+        reference = cache.at(header["fps"])
 
     dump = open(args.dump, "wb") if args.dump else None
     decoded = 0

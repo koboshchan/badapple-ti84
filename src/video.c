@@ -30,9 +30,10 @@
  * zero ends that chunk's blocks. */
 #define BLOCK_HEADER_BYTES 2
 
-/* Must match MAX_CHUNKS in util/badapple.py. 128 chunks of just under 60000
- * bytes is about 7.7 MB, far more than any calculator's archive holds. */
-#define MAX_CHUNKS 128
+/* Must match MAX_CHUNKS in util/badapple.py. Blocks are packed whole, so a
+ * 60000-byte chunk holds three 16 KB blocks and runs about 20% short of full;
+ * 256 chunks is therefore roughly 12 MB, far more than any archive holds. */
+#define MAX_CHUNKS 256
 
 static struct {
     const uint8_t *base;
@@ -61,7 +62,7 @@ const char *video_StatusText(video_status_t status)
         case VIDEO_BLOCK_TOO_BIG:
             return "video uses blocks too large for this player";
         case VIDEO_MISSING_CHUNK:
-            return "a BADAPPnn chunk is missing";
+            return "a BADAPnnn chunk is missing";
         case VIDEO_TOO_MANY_CHUNKS:
             return "too many chunks for this player";
         case VIDEO_ARCHIVE_FAILED:

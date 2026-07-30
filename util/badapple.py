@@ -30,13 +30,18 @@ HEADER_NAME = "BADAPPLH"
 CHUNK_NAME_FMT = "BADAP%03d"
 NAME_BYTES = 8
 
-# Must match MAX_CHUNKS in src/video.c. 128 chunks of just under 60000 bytes is
-# about 7.7 MB, far more than any calculator's archive holds.
-MAX_CHUNKS = 128
+# Must match MAX_CHUNKS in src/video.c. Blocks are packed whole, so a 60000-byte
+# chunk holds three 16 KB blocks and runs about 20% short of full; 256 chunks is
+# therefore roughly 12 MB, enough to cover uncompressed encodes of long videos as
+# well as any compressed one.
+MAX_CHUNKS = 256
 
-# Appvar payloads must stay under the OS's 16-bit variable size field. Held well
-# clear of 65535 to leave room for the variable header convbin prepends.
+# Appvar payloads must stay under the OS's 16-bit variable size field -- the
+# player reads a chunk's length back through ti_GetSize, which returns a u16, so
+# anything larger would be silently truncated. Held well clear of 65535 to leave
+# room for the variable header convbin prepends.
 CHUNK_MAX = 60000
+CHUNK_HARD_MAX = 0xFFFF
 
 # The frame stream is cut into blocks, which are the unit of compression: the
 # player decompresses one block at a time into a buffer and decodes frames out of

@@ -1,11 +1,11 @@
 /**
  * Streaming decoder for the Bad Apple CE video format.
  *
- * Video lives in archived appvars (BADAPPLH plus BADAPP00, BADAPP01, ...)
+ * Video lives in archived appvars (BADAPPLH plus BADAP000, BADAP001, ...)
  * written by util/encode.py. Archived variables are contiguous in flash and
- * directly addressable on the eZ80, so playback reads the opcode stream through
- * a plain pointer: no per-frame file I/O, no decompression, no copying beyond
- * the pixels that actually changed.
+ * directly addressable on the eZ80, so playback expands one 16 KB block at a
+ * time straight out of flash and reads the frame opcodes from it: no per-frame
+ * file I/O, and no copying beyond the pixels that actually changed.
  *
  * The format is documented in util/badapple.py and the README; util/verify.py
  * contains a reference decoder that must stay in agreement with this one.

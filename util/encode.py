@@ -10,19 +10,22 @@ and encoded as one of three frame types (see util/badapple.py):
   P-frame  row mask + per-row column mask + changed bytes
   D-frame  identical to the previous frame
 
-Each frame is encoded whichever way is smallest. The output is split into
-appvar-sized chunks; frames never straddle a chunk boundary.
+Each frame is encoded whichever way is smallest. The stream is then cut into
+16 KB blocks, each zx0-compressed, and the blocks are packed into appvar-sized
+chunks. Frames never straddle a block, and blocks never straddle a chunk.
 
 The TI-84 Plus CE has only about 3 MB of user archive, and 320x240 at 30fps
-does not come close to fitting. By default the encoder searches downwards
-through candidate framerates and picks the highest one whose encoded size fits
---budget, reporting what it chose.
+does not come close to fitting. By default the encoder measures how well the
+video compresses, searches downwards through candidate framerates for the
+highest one that should fit --budget, compresses it, and drops to the next
+framerate if the real result misses. It reports what it chose.
 """
 
 import argparse
 import concurrent.futures
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,9 +44,11 @@ GRAY_FRAME_BYTES = ba.WIDTH * ba.HEIGHT
 
 # Subdirectory holding an uncompressed twin of the payload, for host-side checks.
 HOSTCHECK_DIR = "hostcheck"
-# Those files are never sent to a calculator, so they are not bound by the appvar
-# size limit; larger chunks keep the count within the player's limit.
-HOSTCHECK_CHUNK_MAX = 500000
+
+# Matches the chunk files this script writes, so stale ones can be cleared out
+# between attempts without touching anything else in the directory.
+CHUNK_FILE_RE = re.compile(
+    re.escape(ba.CHUNK_NAME_FMT.split("%")[0].lower()) + r"\d+\.bin")
 
 
 # --------------------------------------------------------------------------
@@ -138,6 +143,26 @@ def packed_frames(path, fps, threshold, invert, msb_first, stretch,
         yield np.packbits(bits, axis=1, bitorder=bitorder)
 
 
+def candidate_framerates(source_fps, forced_fps=None):
+    """The framerates to consider, highest first.
+
+    Shared with util/verify.py: the first entry is the rate the video is decoded
+    at, and every lower rate is sampled from that decode, so a verifier has to
+    make the same choice to reproduce the encoder's frames exactly.
+    """
+    if forced_fps:
+        return [forced_fps]
+    cands = list(FPS_CANDIDATES)
+    if source_fps:
+        # Asking for more frames per second than the source has just inserts
+        # duplicates, which would label the result with a rate the video does
+        # not actually have.
+        capped = [f for f in cands if f <= source_fps + 0.5]
+        if capped:
+            cands = capped
+    return cands
+
+
 class FrameCache:
     """Decodes the video once, then serves any framerate from memory.
 
@@ -148,10 +173,14 @@ class FrameCache:
     """
 
     def __init__(self, path, base_fps, threshold, invert, msb_first, stretch,
-                 hwaccel="auto"):
+                 hwaccel="auto", max_frames=None):
         self.base_fps = base_fps
-        frames = list(packed_frames(path, base_fps, threshold, invert,
-                                    msb_first, stretch, hwaccel))
+        frames = []
+        for frame in packed_frames(path, base_fps, threshold, invert,
+                                   msb_first, stretch, hwaccel):
+            frames.append(frame)
+            if max_frames and len(frames) >= max_frames:
+                break
         self.cache = (np.stack(frames) if frames
                       else np.zeros((0, ba.HEIGHT, ba.ROW_BYTES), np.uint8))
 
@@ -347,7 +376,7 @@ def build_blocks(stream):
     return blocks, frame_count
 
 
-def estimate_ratio(blocks, workdir, samples=16):
+def estimate_ratio(blocks, workdir, samples=24):
     """Estimates how much zx0 will shrink this video, from a sample of blocks.
 
     The budget describes the size on the calculator, so the framerate search has
@@ -446,6 +475,14 @@ def pack_chunks(stored, outdir, chunk_max=ba.CHUNK_MAX):
 def write_payload(blocks, outdir, frame_count, fps, flags,
                   chunk_max=ba.CHUNK_MAX):
     """Writes the chunk files and header for one packing of the blocks."""
+    # Clear any previous packing first: a retry at a lower framerate produces
+    # fewer chunks, and leftovers would look like part of the video.
+    if os.path.isdir(outdir):
+        current = {os.path.basename(ba.chunk_name(i).lower() + ".bin")
+                   for i in range(len(blocks) + 1)}
+        for stale in os.listdir(outdir):
+            if CHUNK_FILE_RE.fullmatch(stale) and stale not in current:
+                os.remove(os.path.join(outdir, stale))
     chunks = pack_chunks(blocks, outdir, chunk_max)
     header = ba.build_header(frame_count, fps, len(chunks), flags)
     header_path = os.path.join(outdir, ba.HEADER_NAME.lower() + ".bin")
@@ -459,6 +496,10 @@ def write_payload(blocks, outdir, frame_count, fps, flags,
         if size > chunk_max:
             sys.exit("error: %s is %d bytes, over the %d byte chunk limit"
                      % (path, size, chunk_max))
+        if size > ba.CHUNK_HARD_MAX:
+            # The player reads chunk lengths through a 16-bit field.
+            sys.exit("error: %s is %d bytes, which cannot be expressed in the "
+                     "16-bit size field" % (path, size))
     return chunks, total
 
 
@@ -480,6 +521,8 @@ def main():
                          "player's LCD configuration (default: lsb)")
     ap.add_argument("--stretch", action="store_true",
                     help="stretch to 320x240 instead of letterboxing")
+    ap.add_argument("--max-frames", type=int, metavar="N",
+                    help="stop after N frames; for quick pipeline test runs")
     ap.add_argument("--hwaccel", default="auto",
                     help="ffmpeg -hwaccel backend for decoding, or 'none' "
                          "(default: auto)")
@@ -505,22 +548,19 @@ def main():
     print("Target: %dx%d 1bpp, %s-first pixels, budget %.2f MB"
           % (ba.WIDTH, ba.HEIGHT, args.bit_order, args.budget / 1e6))
 
-    # Asking for more frames per second than the source has just inserts
-    # duplicates, which would label the result with a rate the video does not
-    # actually have.
-    candidates = [args.fps] if args.fps else list(FPS_CANDIDATES)
-    if source_fps and not args.fps:
-        capped = [f for f in candidates if f <= source_fps + 0.5]
-        if capped and capped != candidates:
-            print("Capping the search at the source's %g fps." % source_fps)
-            candidates = capped
+    candidates = candidate_framerates(source_fps, args.fps)
+    if not args.fps and source_fps and candidates != FPS_CANDIDATES:
+        print("Capping the search at the source's %g fps." % source_fps)
 
     # Decode once at the highest framerate under consideration; every lower
     # candidate is then sampled from the cache rather than decoded again.
     started = time.monotonic()
     print("\nDecoding at %d fps:" % candidates[0])
     cache = FrameCache(args.input, candidates[0], args.threshold, args.invert,
-                       msb_first, args.stretch, args.hwaccel)
+                       msb_first, args.stretch, args.hwaccel, args.max_frames)
+    if args.max_frames:
+        print("(--max-frames %d: this is a partial test encode)"
+              % args.max_frames)
     if not len(cache):
         sys.exit("error: no frames decoded from %s" % args.input)
     print("Cached %d frames (%.1f MB) in %.1fs."
@@ -549,9 +589,13 @@ def main():
     else:
         probe_fps = None
 
+    # No safety margin is applied here on purpose. The estimate is only used to
+    # choose which framerate to try; the real compressed size is checked after
+    # compressing, and a miss drops to the next framerate. Padding the estimate
+    # would throw away a framerate that actually fits.
     raw_budget = int(args.budget / ratio)
     if not args.no_compress:
-        print("So the budget of %.2f MB allows about %.2f MB of encoded data."
+        print("So the budget of %.2f MB allows roughly %.2f MB of encoded data."
               % (args.budget / 1e6, raw_budget / 1e6))
 
     if args.fps:
@@ -601,47 +645,61 @@ def main():
                                                         args.budget / 1e6))
         print("Chose %d fps." % fps)
 
-    if blocks is not None and fps == probe_fps:
-        frame_count = probe_frame_count
-        print("\nReusing the %d fps encode." % fps)
-    else:
-        print("\nEncoding at %d fps:" % fps)
-        stats = Stats()
-        blocks, frame_count = build_blocks(
-            encode_stream(frames(fps), stats, materialise=True))
-        print(stats.report(fps))
-    print("Cut into %d blocks of at most %d bytes." % (len(blocks),
-                                                      ba.BLOCK_SIZE))
-
     base_flags = 0
     if msb_first:
         base_flags |= ba.FLAG_MSB_FIRST
     if args.invert:
         base_flags |= ba.FLAG_INVERT
 
-    if args.no_compress:
-        stored = blocks
-        flags = base_flags
-    else:
-        print("Compressing %d blocks with zx0:" % len(blocks))
-        stored = compress_blocks(blocks, tmpdir)
-        flags = base_flags | ba.FLAG_ZX0
-        raw = sum(len(b) for b in blocks)
-        packed = sum(len(b) for b in stored)
-        print("zx0: %.2f MB -> %.2f MB (%.0f%% of raw)"
-              % (raw / 1e6, packed / 1e6, 100.0 * packed / raw))
+    # The estimate can still come out slightly optimistic. Compress for real,
+    # and if the result misses the budget, step down a framerate and try again so
+    # what lands in data/ is always something that fits.
+    attempt = candidates.index(fps)
+    while True:
+        fps = candidates[attempt]
+        if blocks is not None and fps == probe_fps:
+            frame_count = probe_frame_count
+            print("\nReusing the %d fps encode." % fps)
+        else:
+            print("\nEncoding at %d fps:" % fps)
+            stats = Stats()
+            blocks, frame_count = build_blocks(
+                encode_stream(frames(fps), stats, materialise=True))
+            print(stats.report(fps))
+        print("Cut into %d blocks of at most %d bytes." % (len(blocks),
+                                                          ba.BLOCK_SIZE))
 
-    chunks, total = write_payload(stored, args.outdir, frame_count, fps, flags)
+        if args.no_compress:
+            stored = blocks
+            flags = base_flags
+        else:
+            print("Compressing %d blocks with zx0:" % len(blocks))
+            stored = compress_blocks(blocks, tmpdir)
+            flags = base_flags | ba.FLAG_ZX0
+            raw = sum(len(b) for b in blocks)
+            packed = sum(len(b) for b in stored)
+            print("zx0: %.2f MB -> %.2f MB (%.0f%% of raw)"
+                  % (raw / 1e6, packed / 1e6, 100.0 * packed / raw))
+
+        chunks, total = write_payload(stored, args.outdir, frame_count, fps,
+                                     flags)
+        print("Total on-calculator size: %.2f MB in %d variables"
+              % (total / 1e6, len(chunks) + 1))
+
+        if total <= args.budget or args.fps or attempt + 1 >= len(candidates):
+            break
+        print("That misses the %.2f MB budget; dropping to %d fps and "
+              "re-encoding." % (args.budget / 1e6, candidates[attempt + 1]))
+        attempt += 1
+        blocks = None
+
     if os.path.isdir(tmpdir):
         shutil.rmtree(tmpdir, ignore_errors=True)
     print("Wrote %s and %d chunks to %s/"
           % (ba.HEADER_NAME.lower() + ".bin", len(chunks), args.outdir))
-    print("Total on-calculator size: %.2f MB in %d variables"
-          % (total / 1e6, len(chunks) + 1))
     if total > args.budget:
-        print("warning: that is over the %.2f MB budget (the compression "
-              "estimate was optimistic); re-run with a lower --fps if it does "
-              "not fit your calculator" % (args.budget / 1e6))
+        print("warning: that is still over the %.2f MB budget; it may not fit "
+              "your calculator's archive" % (args.budget / 1e6))
     if frame_count:
         print("Playback: %d frames at %d fps = %.1fs"
               % (frame_count, fps, frame_count / fps))
@@ -652,12 +710,9 @@ def main():
     # still check every other part of the format and the player's decoder.
     if not args.no_compress:
         host_dir = os.path.join(args.outdir, HOSTCHECK_DIR)
-        # These files never go on a calculator, so the appvar size limit does not
-        # apply. Uncompressed data is about three times larger and would need
-        # more chunks than the player supports at 60000 bytes each; use bigger
-        # chunks, still small enough to exercise chunk-to-chunk transitions.
-        write_payload(blocks, host_dir, frame_count, fps, base_flags,
-                      chunk_max=HOSTCHECK_CHUNK_MAX)
+        # Same chunk size as the real payload: chunks are read back through a
+        # 16-bit size field, so oversized ones would be silently truncated.
+        write_payload(blocks, host_dir, frame_count, fps, base_flags)
         print("Wrote an uncompressed copy to %s/ for host verification."
               % host_dir)
 
