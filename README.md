@@ -3,7 +3,7 @@
 Full-screen 320x240 monochrome video playback on a TI-84 Plus CE, written in C for the
 [CE C toolchain](https://github.com/CE-Programming/toolchain). The player streams video
 straight out of the flash archive; the encoder is Python and takes any video file ffmpeg
-can read.
+can read. Confirmed working on real hardware.
 
 This is a rewrite for the CE. The original TI-83+/84+ SE version — a 96-page signed flash
 application in Z80 assembly, with 96x64 video and four channels of tracker audio bit-banged
@@ -149,6 +149,11 @@ except the single `zx0_Decompress` call itself, which is a matched pair with the
 that produced the data. When verifying a partial encode, pass the same limit so the
 reference matches:
 `make verify VIDEO=badapple.mp4 VERIFYFLAGS="--duration 45"`.
+
+The remainder — zx0 expansion on the calculator, the LCD mode switch and its pixel order,
+frame pacing, and restoring the screen on exit — is confirmed working on real TI-84 Plus CE
+hardware. In particular the default `--bit-order lsb` is the correct one for the LCD as the
+player configures it, so `--bit-order msb` should not be needed.
 
 ## Layout
 
