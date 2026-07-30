@@ -135,14 +135,16 @@ class Decoder:
                 out += count
 
     def _pframe(self):
+        # Masks are rounded up to whole bytes, so trim the padding bits the
+        # encoder leaves clear at the end.
         row_mask = np.unpackbits(
             np.frombuffer(self._take(ba.ROW_MASK_BYTES), dtype=np.uint8),
-            bitorder="little").astype(bool)
+            bitorder="little")[:ba.HEIGHT].astype(bool)
         buf = self.buf.reshape(ba.HEIGHT, ba.ROW_BYTES)
         for row in np.flatnonzero(row_mask).tolist():
             col_mask = np.unpackbits(
                 np.frombuffer(self._take(ba.COL_MASK_BYTES), dtype=np.uint8),
-                bitorder="little").astype(bool)
+                bitorder="little")[:ba.ROW_BYTES].astype(bool)
             n = int(col_mask.sum())
             buf[row][col_mask] = np.frombuffer(self._take(n), dtype=np.uint8)
 
@@ -174,6 +176,8 @@ def main():
     ap.add_argument("--stretch", action="store_true")
     ap.add_argument("--max-frames", type=int, metavar="N",
                     help="match an encode that used --max-frames N")
+    ap.add_argument("--duration", type=float, metavar="SECONDS",
+                    help="match an encode that used --duration SECONDS")
     ap.add_argument("--dump", metavar="FILE",
                     help="write every decoded frame as raw 1bpp bytes, for "
                          "comparison against the C decoder (see test/)")
@@ -205,7 +209,7 @@ def main():
             args.source, base_fps, args.threshold,
             bool(header["flags"] & ba.FLAG_INVERT),
             bool(header["flags"] & ba.FLAG_MSB_FIRST), args.stretch,
-            max_frames=args.max_frames)
+            max_frames=args.max_frames, duration=args.duration)
         reference = cache.at(header["fps"])
 
     dump = open(args.dump, "wb") if args.dump else None

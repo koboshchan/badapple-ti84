@@ -3,16 +3,32 @@
 Used by encode.py (writer) and verify.py (reader). The C player in src/video.c
 implements the same format; keep the three in sync.
 
-Frame geometry is fixed at the CE's native LCD size in 1bpp mode:
-320x240 pixels = 40 bytes per row = 9600 bytes per frame.
+Video is encoded at the CE's native LCD resolution, 320x240, so the player scans
+decoded bytes out of VRAM directly with no scaling step.
+
+320x240 = 40 bytes per row = 9600 bytes per frame.
+
+To trade resolution for framerate on a tight archive, set WIDTH/HEIGHT to 160/120
+and SCALE to 2 here, and FRAME_WIDTH/FRAME_HEIGHT/FRAME_SCALE to match in
+src/lcd.h; the player then pixel-doubles each frame onto the screen.
 """
 
+# Encoded video geometry. The player has these compiled in as well (FRAME_WIDTH
+# and FRAME_HEIGHT in src/lcd.h) and rejects a file that disagrees.
 WIDTH = 320
 HEIGHT = 240
-ROW_BYTES = WIDTH // 8       # 40
+
+# The player scales up by this factor to fill the LCD.
+SCALE = 1
+DISPLAY_WIDTH = WIDTH * SCALE   # 320
+DISPLAY_HEIGHT = HEIGHT * SCALE  # 240
+
+ROW_BYTES = WIDTH // 8            # 40
 FRAME_BYTES = ROW_BYTES * HEIGHT  # 9600
-ROW_MASK_BYTES = HEIGHT // 8      # 30
-COL_MASK_BYTES = ROW_BYTES // 8   # 5
+# Both masks are rounded up to whole bytes. At 40 columns they come out exact;
+# at other widths the encoder leaves the spare bits clear.
+ROW_MASK_BYTES = (HEIGHT + 7) // 8      # 30
+COL_MASK_BYTES = (ROW_BYTES + 7) // 8   # 5
 
 # Frame opcodes. Numbering is inherited from the original Z80 encoder.
 OP_PFRAME = 1     # row/column delta against the previous frame
@@ -30,11 +46,11 @@ HEADER_NAME = "BADAPPLH"
 CHUNK_NAME_FMT = "BADAP%03d"
 NAME_BYTES = 8
 
-# Must match MAX_CHUNKS in src/video.c. Blocks are packed whole, so a 60000-byte
-# chunk holds three 16 KB blocks and runs about 20% short of full; 256 chunks is
-# therefore roughly 12 MB, enough to cover uncompressed encodes of long videos as
-# well as any compressed one.
-MAX_CHUNKS = 256
+# The header stores the chunk count in a single byte, so this is the ceiling.
+# Blocks are packed whole, so a 60000-byte chunk holds three 16 KB blocks and runs
+# about 20% short of full; 255 chunks is therefore roughly 12 MB, enough for
+# uncompressed encodes of long videos as well as any compressed one.
+MAX_CHUNKS = 255
 
 # Appvar payloads must stay under the OS's 16-bit variable size field -- the
 # player reads a chunk's length back through ti_GetSize, which returns a u16, so

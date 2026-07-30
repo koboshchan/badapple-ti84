@@ -19,10 +19,10 @@
 
 typedef enum {
     VIDEO_OK,
+    VIDEO_UNCHANGED,      /* frame is identical to the previous one */
     VIDEO_NO_HEADER,      /* BADAPPLH is missing */
     VIDEO_BAD_HEADER,     /* wrong magic, version or geometry */
     VIDEO_MISSING_CHUNK,  /* a chunk named in the header is not present */
-    VIDEO_TOO_MANY_CHUNKS,
     VIDEO_ARCHIVE_FAILED, /* a chunk is in RAM and could not be archived */
     VIDEO_BLOCK_TOO_BIG,  /* the file's block size exceeds our buffer */
     VIDEO_BAD_STREAM,     /* unrecognised opcode or truncated chunk */
@@ -68,8 +68,10 @@ video_status_t video_Rewind(void);
 /**
  * Decodes the next frame into buf.
  *
- * @returns VIDEO_OK if a frame was decoded, VIDEO_END at the end of the video,
- *          or an error status if the stream is malformed.
+ * @returns VIDEO_OK if pixels changed and the frame needs drawing,
+ *          VIDEO_UNCHANGED if it is identical to the previous frame and buf was
+ *          left alone, VIDEO_END at the end of the video, or an error status if
+ *          the stream is malformed.
  */
 video_status_t video_NextFrame(uint8_t *buf);
 

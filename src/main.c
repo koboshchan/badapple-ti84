@@ -48,7 +48,8 @@ int main(void)
         return 1;
     }
 
-    uint8_t *frame = lcd_Begin(info.msb_first);
+    lcd_Begin(info.msb_first);
+    uint8_t *frame = lcd_FrameBuffer();
     clock_Begin();
 
     unsigned long dropped = 0;
@@ -57,7 +58,9 @@ int main(void)
 
     for (;;) {
         status = video_NextFrame(frame);
-        if (status != VIDEO_OK) {
+        if (status == VIDEO_OK) {
+            lcd_Present();
+        } else if (status != VIDEO_UNCHANGED) {
             break;
         }
         shown++;

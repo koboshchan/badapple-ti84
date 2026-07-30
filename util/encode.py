@@ -83,8 +83,8 @@ def probe(path):
     return duration, fps
 
 
-def gray_frames(path, fps, stretch, hwaccel="auto"):
-    """Yield successive 320x240 grayscale frames as uint8 arrays."""
+def gray_frames(path, fps, stretch, hwaccel="auto", duration=None):
+    """Yield successive grayscale frames, scaled to the encoded size."""
     exe = shutil.which("ffmpeg")
     if exe is None:
         sys.exit("error: ffmpeg not found on PATH")
@@ -99,8 +99,10 @@ def gray_frames(path, fps, stretch, hwaccel="auto"):
         # Hardware decoding, where the platform offers it. ffmpeg falls back to
         # software on its own if the requested backend is unavailable.
         cmd += ["-hwaccel", hwaccel]
-    cmd += ["-i", path,
-            "-vf", "fps=%d,%s,format=gray" % (fps, scale),
+    cmd += ["-i", path]
+    if duration:
+        cmd += ["-t", str(duration)]
+    cmd += ["-vf", "fps=%d,%s,format=gray" % (fps, scale),
             "-f", "rawvideo", "-pix_fmt", "gray", "-"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE,
@@ -133,10 +135,10 @@ def gray_frames(path, fps, stretch, hwaccel="auto"):
 
 
 def packed_frames(path, fps, threshold, invert, msb_first, stretch,
-                  hwaccel="auto"):
-    """Yield successive frames as packed 1bpp uint8 arrays, shape (240, 40)."""
+                  hwaccel="auto", duration=None):
+    """Yield successive frames as packed 1bpp uint8 arrays, shape (120, 20)."""
     bitorder = "big" if msb_first else "little"
-    for gray in gray_frames(path, fps, stretch, hwaccel):
+    for gray in gray_frames(path, fps, stretch, hwaccel, duration):
         bits = gray > threshold
         if invert:
             bits = ~bits
@@ -173,11 +175,11 @@ class FrameCache:
     """
 
     def __init__(self, path, base_fps, threshold, invert, msb_first, stretch,
-                 hwaccel="auto", max_frames=None):
+                 hwaccel="auto", max_frames=None, duration=None):
         self.base_fps = base_fps
         frames = []
         for frame in packed_frames(path, base_fps, threshold, invert,
-                                   msb_first, stretch, hwaccel):
+                                   msb_first, stretch, hwaccel, duration):
             frames.append(frame)
             if max_frames and len(frames) >= max_frames:
                 break
@@ -521,6 +523,8 @@ def main():
                          "player's LCD configuration (default: lsb)")
     ap.add_argument("--stretch", action="store_true",
                     help="stretch to 320x240 instead of letterboxing")
+    ap.add_argument("--duration", type=float, metavar="SECONDS",
+                    help="encode only the first SECONDS of the video")
     ap.add_argument("--max-frames", type=int, metavar="N",
                     help="stop after N frames; for quick pipeline test runs")
     ap.add_argument("--hwaccel", default="auto",
@@ -557,7 +561,11 @@ def main():
     started = time.monotonic()
     print("\nDecoding at %d fps:" % candidates[0])
     cache = FrameCache(args.input, candidates[0], args.threshold, args.invert,
-                       msb_first, args.stretch, args.hwaccel, args.max_frames)
+                       msb_first, args.stretch, args.hwaccel, args.max_frames,
+                       args.duration)
+    if args.duration:
+        print("(--duration %g: only the first %g seconds are encoded)"
+              % (args.duration, args.duration))
     if args.max_frames:
         print("(--max-frames %d: this is a partial test encode)"
               % args.max_frames)

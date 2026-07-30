@@ -128,7 +128,9 @@ int main(int argc, char **argv)
     unsigned int decoded = 0;
     for (;;) {
         status = video_NextFrame(frame);
-        if (status != VIDEO_OK) {
+        /* VIDEO_UNCHANGED means the decoder deliberately left the buffer alone,
+         * so it still holds the frame to display; dump it like any other. */
+        if (status != VIDEO_OK && status != VIDEO_UNCHANGED) {
             break;
         }
         fwrite(frame, 1, sizeof frame, out);

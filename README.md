@@ -12,10 +12,19 @@ Video of the original running: https://www.youtube.com/watch?v=6pAeWf3NPNU
 
 ## How it works
 
-The CE's LCD controller can scan out **1 bit per pixel** through a two-entry palette. In
-that mode a 320x240 frame is 9600 bytes and every decoded byte is eight finished pixels, so
-frame data is written directly into VRAM with no pixel expansion, no blitting, and no
-double buffer. Frames are stored as one of three types, whichever is smallest:
+The CE's LCD controller can scan out **1 bit per pixel** through a two-entry palette, so the
+whole 320x240 screen is only 9600 bytes and every byte is eight finished pixels.
+
+Video is encoded at that native size, so decoded bytes go straight into VRAM with no pixel
+expansion, no blitting and no second buffer. Frames identical to their predecessor cost
+nothing at all to display.
+
+If the archive is too tight for a long video at full resolution, setting `FRAME_SCALE` to 2
+in `src/lcd.h` (and `SCALE` in `util/badapple.py`, with the matching 160x120 geometry)
+switches to half-resolution video that the player pixel-doubles onto the screen through a
+lookup table. That quarters the data a given framerate needs.
+
+Frames are stored as one of three types, whichever is smallest:
 
 - **I-frame** — the whole frame, byte run-length encoded with an escape byte.
 - **P-frame** — a delta: a bitmask of changed rows, then per changed row a bitmask of
@@ -31,20 +40,20 @@ all.
 
 ### The archive budget
 
-A CE has roughly 3 MB of user archive, and 320x240 at 30fps encodes to something like
-6-8 MB. It does not fit, and lowering the framerate barely helps: halving it cuts only about
-a quarter of the data, because consecutive frames then differ more and the encoder falls back
-to I-frames. Compression is what makes full resolution possible — zx0 takes this video's
-stream to about 36% of its encoded size.
+A CE has roughly 3 MB of user archive, and the full 5:24 video at 320x240 and 24fps encodes
+to about 8.9 MB. Lowering the framerate barely helps: halving it cuts only about a quarter of
+the data, because consecutive frames then differ more and the encoder falls back to I-frames.
+zx0 compression is what makes full resolution practical, taking the stream to roughly a third
+of its encoded size; shortening the clip with `--duration`, or halving the resolution, covers
+the rest.
 
-So the encoder is **budget-driven**: it measures how well the video compresses, searches
+The encoder is **budget-driven**: it measures how well the video compresses, searches
 downwards through candidate framerates for the highest one that should fit the budget
 (2.6 MB by default), compresses it for real, and drops to the next framerate if the actual
-result misses. Expect somewhere in the 12-18fps range for a full-length video, depending on
-how much motion it has.
+result misses.
 
-For the reference encode — the full 5:24 Bad Apple video — that lands on **15fps in 2.40 MB
-across 43 appvars**.
+For the reference encode — the first 45 seconds of Bad Apple at full 320x240 — that comes out
+at **24fps, the source's own rate, in 0.28 MB across 7 appvars**.
 
 There is no audio. The CE has no link port — only USB — so the original's bit-banged
 tracker has no output path on stock hardware.
@@ -72,8 +81,14 @@ make
 `bin/`. It skips re-encoding if `data/` is already populated — delete `data/` (or run
 `make distclean`) to force a re-encode. `make` produces `bin/BADAPPLE.8xp`.
 
-Encoding the full video takes a few minutes, nearly all of it in zx0 compression (about
-two seconds per 16 KB block, spread across your cores). For a quick check that the whole
+To encode only part of the video, give a duration in seconds:
+
+```bash
+make data VIDEO=badapple.mp4 ENCFLAGS="--duration 45"
+```
+
+Encoding a long video takes a few minutes, nearly all of it in zx0 compression (about two
+seconds per 16 KB block, spread across your cores). For a quick check that the whole
 pipeline works, encode just the first few frames:
 
 ```bash
@@ -92,9 +107,24 @@ and `--bit-order`.
 
 ## Transferring and running
 
-Send **`bin/BADAPPLE.8xp` and every `bin/BADAP*.8xv` plus `bin/BADAPPLH.8xv`** to the
-calculator with TI Connect CE or TiLP. There will be a few dozen appvars; they must all be
-present. They are marked archived already, so they go straight to flash without eating RAM.
+The video is spread over several appvars, all of which have to be present, so the easiest
+route is a single bundle:
+
+```bash
+make bundle
+```
+
+That writes `bin/BADAPPLE.b84`, containing the program and every appvar. Open TI Connect CE,
+go to Calculator Explorer, and drag the `.b84` onto it; it sends everything in one go. TiLP
+can send the individual files instead.
+
+Sending the files by hand works too — `bin/BADAPPLE.8xp`, every `bin/BADAP*.8xv`, and
+`bin/BADAPPLH.8xv`. They are marked archived already, so they go straight to flash without
+eating RAM.
+
+Check free archive with `2nd` `+` `2` before sending. The reference encode needs only about
+0.28 MB, but a longer video needs proportionally more; if there is not enough room, shorten
+it with `--duration` or re-encode with a smaller `--budget`.
 
 Run it with `Asm(prgmBADAPPLE)` (on OS 5.5+ you will need a shell such as
 [Cesium](https://github.com/mateoconlechuga/cesium) or arTIfiCE, since TI removed native
@@ -116,15 +146,16 @@ zx0 expansion only exists as calculator code, so neither check can read the comp
 payload directly. The encoder therefore writes an uncompressed copy of the same blocks and
 appvars to `data/hostcheck/`, and both targets use it automatically. Everything is covered
 except the single `zx0_Decompress` call itself, which is a matched pair with the `convbin`
-that produced the data. When verifying a partial encode, pass the same limit:
-`make verify VIDEO=badapple.mp4 VERIFYFLAGS="--max-frames 15"`.
+that produced the data. When verifying a partial encode, pass the same limit so the
+reference matches:
+`make verify VIDEO=badapple.mp4 VERIFYFLAGS="--duration 45"`.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
 | `src/main.c` | Startup, frame pacing off timer 1, key handling, teardown |
-| `src/lcd.c` | Puts the LCD into 1bpp mode and restores it afterwards |
+| `src/lcd.c` | 1bpp LCD mode, optional 2x scaler, restoring the screen afterwards |
 | `src/video.c` | Appvar and block streaming, zx0 expansion, I/P/D frame decoding |
 | `util/encode.py` | Video file to appvar chunks, with the framerate budget search |
 | `util/verify.py` | Reference decoder and round-trip verification |

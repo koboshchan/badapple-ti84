@@ -13,8 +13,10 @@
 #define OP_NEXTCHUNK 4
 #define OP_END 5
 
-#define ROW_MASK_BYTES (FRAME_HEIGHT / 8)     /* 30 */
-#define COL_MASK_BYTES (FRAME_ROW_BYTES / 8)  /* 5 */
+/* Both masks are rounded up to whole bytes, matching util/badapple.py. The 20
+ * columns of a row leave 4 unused bits in the last column-mask byte. */
+#define ROW_MASK_BYTES ((FRAME_HEIGHT + 7) / 8)     /* 15 */
+#define COL_MASK_BYTES ((FRAME_ROW_BYTES + 7) / 8)  /* 3 */
 
 #define MAGIC "BAPL"
 #define VERSION 2
@@ -30,9 +32,9 @@
  * zero ends that chunk's blocks. */
 #define BLOCK_HEADER_BYTES 2
 
-/* Must match MAX_CHUNKS in util/badapple.py. Blocks are packed whole, so a
- * 60000-byte chunk holds three 16 KB blocks and runs about 20% short of full;
- * 256 chunks is therefore roughly 12 MB, far more than any archive holds. */
+/* Sized to cover every value the header's one-byte chunk count can hold, so the
+ * count never needs a range check. util/badapple.py caps encodes at 255 chunks,
+ * which is roughly 12 MB -- far more than any archive holds. */
 #define MAX_CHUNKS 256
 
 static struct {
@@ -55,16 +57,16 @@ const char *video_StatusText(video_status_t status)
     switch (status) {
         case VIDEO_OK:
             return "ok";
+        case VIDEO_UNCHANGED:
+            return "frame unchanged";
         case VIDEO_NO_HEADER:
             return "BADAPPLH not found - send the appvars";
         case VIDEO_BAD_HEADER:
-            return "BADAPPLH is not a valid v2 320x240 header";
+            return "BADAPPLH is not a valid v2 160x120 header";
         case VIDEO_BLOCK_TOO_BIG:
             return "video uses blocks too large for this player";
         case VIDEO_MISSING_CHUNK:
             return "a BADAPnnn chunk is missing";
-        case VIDEO_TOO_MANY_CHUNKS:
-            return "too many chunks for this player";
         case VIDEO_ARCHIVE_FAILED:
             return "could not archive the video appvars";
         case VIDEO_BAD_STREAM:
@@ -150,9 +152,11 @@ video_status_t video_Open(video_info_t *info, uint8_t *buffer)
         ti_Close(handle);
         return VIDEO_BLOCK_TOO_BIG;
     }
-    if (names == 0 || names > MAX_CHUNKS) {
+    /* No upper bound needed: names is a byte and MAX_CHUNKS covers every value
+     * one can hold. */
+    if (names == 0) {
         ti_Close(handle);
-        return VIDEO_TOO_MANY_CHUNKS;
+        return VIDEO_BAD_HEADER;
     }
     if (header_size < HEADER_FIXED_BYTES + (unsigned int)names * NAME_BYTES) {
         ti_Close(handle);
@@ -302,13 +306,18 @@ static void decode_pframe(uint8_t *buf)
             const uint8_t *col_mask = src;
             src += COL_MASK_BYTES;
             uint8_t *dst = row;
+            /* The column mask is rounded up to whole bytes, so the last one can
+             * cover fewer than 8 columns; stop at the end of the row. */
+            unsigned int remaining = FRAME_ROW_BYTES;
             for (uint8_t c = 0; c < COL_MASK_BYTES; c++) {
                 uint8_t cols = col_mask[c];
+                unsigned int width = remaining < 8 ? remaining : 8;
+                remaining -= width;
                 if (cols == 0) {
-                    dst += 8;
+                    dst += width;
                     continue;
                 }
-                for (uint8_t k = 0; k < 8; k++, dst++) {
+                for (unsigned int k = 0; k < width; k++, dst++) {
                     if (cols & 1) {
                         *dst = *src++;
                     }
@@ -329,7 +338,8 @@ video_status_t video_NextFrame(uint8_t *buf)
         uint8_t op = *pos++;
         switch (op) {
             case OP_DFRAME:
-                return VIDEO_OK;
+                /* Nothing was touched, so the caller can skip redrawing. */
+                return VIDEO_UNCHANGED;
             case OP_IFRAME:
                 decode_iframe(buf);
                 break;

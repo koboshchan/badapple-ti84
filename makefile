@@ -75,7 +75,7 @@ appvars: $(HEADER_BIN)
 # thing can be sent in a single drag rather than as four dozen separate files.
 BUNDLE := $(BINDIR)/$(NAME).b84
 
-bundle: appvars
+bundle: target appvars
 	@echo "bundling $(BUNDLE)"
 	@$(CONVBIN) -l 2 -k b84 -o $(BUNDLE) \
 	    $(foreach f,$(BINDIR)/$(NAME).8xp $(wildcard $(BINDIR)/*.8xv),-j 8x -i $(f))
