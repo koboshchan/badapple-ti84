@@ -1,9 +1,11 @@
 bin/
-allsizes/
-util/*
-!util/*.py
-*.8xk
-music/*.asm
+obj/
+data/
+*.8xp
+*.8xv
 
 [Tt]humbs.db
 [Dd]esktop.ini
+
+__pycache__
+*.pyc
